@@ -1,0 +1,287 @@
+name: Build R28S FriendlyWrt 25.12 Minimal
+
+# =============================================================================
+#  为 NanoPi R28S (RK3528) 构建 FriendlyWrt 25.12 极简 non-docker TF 卡镜像
+#
+#  本 workflow 完全复现 friendlyarm 官方两段式构建链：
+#    源码  : friendlyarm/friendlywrt_manifests @ master-v25.12, rk3528.xml
+#    内核  : friendlyarm/kernel-rockchip   @ nanopi6-v6.1.y
+#    U-Boot: friendlyarm/uboot-rockchip    @ nanopi5-v2017.09 (nanopi_zero2_defconfig)
+#    rootfs: friendlyarm/friendlywrt       @ master-v25.12 (rockchip / non-docker)
+#    打包  : friendlyarm/sd-fuse_rk3528    @ kernel-6.1.y
+#
+#  与官方的唯一差别：在编译 rootfs 之前，用 scripts/minimalize-configs.sh
+#  就地裁剪 configs/rockchip/ ，剔除与 R28S 无关的组件。
+#
+#  触发方式：Actions 页面 → Run workflow，选择模式
+#    dry-run : 只同步源码 + 生成并静态检查 .config（约 20~35 分钟，不出镜像）
+#    full    : 完整编译并产出镜像（约 2~4 小时）
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run = 仅生成并检查 .config；full = 完整编译并出镜像'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - full
+
+permissions:
+  contents: write
+
+env:
+  MANIFEST_URL: https://github.com/friendlyarm/friendlywrt_manifests
+  MANIFEST_BRANCH: master-v25.12
+  MANIFEST_FILE: rk3528.xml
+  DIST_DIRNAME: friendlywrt25
+  IMG_NAME: R28S-FriendlyWrt-25.12-Minimal.img
+  RELEASE_TAG: r28s-minimal-25.12
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      # -----------------------------------------------------------------------
+      - name: 0. 环境信息
+        run: |
+          echo "核心数 : $(nproc)"
+          echo "内存   : $(free -h | awk 'NR==2{print $2}')"
+          echo "触发器 : ${{ github.actor }}"
+          echo "模式   : ${{ inputs.mode }}"
+          echo "--- 磁盘 ---"
+          df -h
+
+      # -----------------------------------------------------------------------
+      - name: 1. 选择构建目录并释放磁盘
+        run: |
+          set -eu
+          # 构建需要约 25GB；GitHub runner 的 / 分区通常只有 ~14GB，
+          # 因此优先使用空间更大的 /mnt（临时盘）。
+          MNT_FREE=$(df -Pk /mnt 2>/dev/null | awk 'NR==2{print $4}')
+          if [ -n "${MNT_FREE:-}" ] && [ "${MNT_FREE}" -gt 30000000 ]; then
+            BUILD_ROOT=/mnt/r28s-build
+            sudo mkdir -p "${BUILD_ROOT}"
+            sudo chown -R "$(id -u):$(id -g)" "${BUILD_ROOT}"
+          else
+            BUILD_ROOT="${GITHUB_WORKSPACE}/build"
+            mkdir -p "${BUILD_ROOT}"
+          fi
+          echo "BUILD_ROOT=${BUILD_ROOT}" >> "$GITHUB_ENV"
+          echo "选用构建目录: ${BUILD_ROOT}"
+
+          # 释放根分区空间（与官方 CI 相同的清理项）
+          sudo swapoff -a || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
+
+          df -h "${BUILD_ROOT}" /
+          echo "可用空间检查: $(df -Pk "${BUILD_ROOT}" | awk 'NR==2{print $4}') KB"
+
+      # -----------------------------------------------------------------------
+      - name: 2. 检出本仓库（携带裁剪脚本）
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      - name: 3. 安装编译环境（官方 build-env-on-ubuntu-bionic）
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eu
+          sudo rm -rf /etc/apt/sources.list.d
+          wget -q https://raw.githubusercontent.com/friendlyarm/build-env-on-ubuntu-bionic/master/install.sh -O /tmp/build-env.sh
+          # 与官方 CI 相同的四处改写：跳过 openjdk 与 fa-toolchain
+          sed -i -e 's/^apt-get -y install openjdk-8-jdk/# apt-get -y install openjdk-8-jdk/' /tmp/build-env.sh
+          sed -i -e 's/^\[ -d fa-toolchain \]/# [ -d fa-toolchain ]/' /tmp/build-env.sh
+          sed -i -e 's/^(cat fa-toolchain/# (cat fa-toolchain/' /tmp/build-env.sh
+          sed -i -e 's/^(tar xf fa-toolchain/# (tar xf fa-toolchain/' /tmp/build-env.sh
+          sudo -E bash /tmp/build-env.sh
+          git config --global user.name  'GitHub Actions'
+          git config --global user.email 'noreply@github.com'
+          git config --global color.ui false
+          git clone --depth 1 https://github.com/friendlyarm/repo
+          sudo cp -f repo/repo /usr/bin/repo
+          sudo chmod +x /usr/bin/repo
+          repo --version | head -2 || true
+
+      # -----------------------------------------------------------------------
+      - name: 4. repo init（rk3528.xml @ master-v25.12）
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}"
+          mkdir -p project && cd project
+          repo init --depth=1 \
+            -u "${MANIFEST_URL}" \
+            -b "${MANIFEST_BRANCH}" \
+            -m "${MANIFEST_FILE}" \
+            --repo-url=https://github.com/friendlyarm/repo \
+            --no-clone-bundle
+
+      # -----------------------------------------------------------------------
+      - name: 5. repo sync（kernel / u-boot / rkbin / friendlywrt / configs / device / scripts / toolchain）
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          repo sync -c --no-clone-bundle -j"$(nproc)" \
+            kernel u-boot rkbin \
+            friendlywrt \
+            configs \
+            device/common device/friendlyelec \
+            scripts scripts/sd-fuse \
+            toolchain
+          echo "--- 目录结构 ---"
+          ls -la
+          echo "--- 磁盘占用 ---"
+          du -sh . 2>/dev/null || true
+          df -h "${BUILD_ROOT}"
+
+      # -----------------------------------------------------------------------
+      - name: 6. 记录源码版本（写入报告）
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          {
+            echo "### 源码版本（本次构建实际使用的 commit）"
+            echo ""
+            echo "| 组件 | 路径 | 分支 | commit |"
+            echo "|---|---|---|---|"
+            for d in friendlywrt kernel u-boot rkbin configs device/friendlyelec device/common scripts scripts/sd-fuse toolchain; do
+              if [ -d "${d}/.git" ]; then
+                br=$(git -C "${d}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "-")
+                sha=$(git -C "${d}" rev-parse --short HEAD 2>/dev/null || echo "-")
+                echo "| ${d} | \`${d}\` | ${br} | \`${sha}\` |"
+              fi
+            done
+          } > "${BUILD_ROOT}/source-versions.md"
+          cat "${BUILD_ROOT}/source-versions.md"
+
+      # -----------------------------------------------------------------------
+      - name: 7. 应用极简配置裁剪
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          bash "${GITHUB_WORKSPACE}/scripts/minimalize-configs.sh" configs/rockchip
+
+      # -----------------------------------------------------------------------
+      - name: 8. 生成 .config（DEBUG_DOT_CONFIG=1，仅生成不编译）
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          cat > .current_config.mk <<EOL
+          . device/friendlyelec/rk3528/base.mk
+          TARGET_IMAGE_DIRNAME=${DIST_DIRNAME}
+          TARGET_FRIENDLYWRT_CONFIG=rockchip
+          TARGET_SD_RAW_FILENAME=${IMG_NAME}
+          EOL
+          echo "--- .current_config.mk ---"
+          cat .current_config.mk
+          echo "------------------------------------------------------------"
+          DEBUG_DOT_CONFIG=1 ./build.sh friendlywrt
+          echo "------------------------------------------------------------"
+          echo ".config 行数: $(wc -l < friendlywrt/.config)"
+
+      # -----------------------------------------------------------------------
+      - name: 9. 静态检查 .config
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          bash "${GITHUB_WORKSPACE}/scripts/check-config.sh" friendlywrt/.config \
+            | tee "${BUILD_ROOT}/static-check.txt"
+
+      # -----------------------------------------------------------------------
+      - name: 10. 完整编译（uboot → kernel → friendlywrt → sd-img）
+        if: inputs.mode == 'full'
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          echo "开始完整编译，预计 2~4 小时…"
+          df -h "${BUILD_ROOT}"
+          ./build.sh all
+          echo "--- out/ ---"
+          ls -la out/ || true
+
+      # -----------------------------------------------------------------------
+      - name: 11. 收集产物并生成报告
+        if: inputs.mode == 'full'
+        env:
+          RUN_STARTED_AT: ${{ github.run_started_at }}
+        run: |
+          set -eu
+          cd "${BUILD_ROOT}/project"
+          bash "${GITHUB_WORKSPACE}/scripts/make-report.sh" \
+            "${BUILD_ROOT}" \
+            "${GITHUB_WORKSPACE}/dist"
+          echo "--- dist/ ---"
+          ls -la "${GITHUB_WORKSPACE}/dist"
+
+      # -----------------------------------------------------------------------
+      - name: 12. dry-run 产物归档（.config + 检查结果）
+        if: inputs.mode != 'full'
+        run: |
+          set -eu
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+          cp -f "${BUILD_ROOT}/project/friendlywrt/.config" "${GITHUB_WORKSPACE}/dist/minimal-.config"
+          cp -f "${BUILD_ROOT}/project/configs/rockchip/"* "${GITHUB_WORKSPACE}/dist/" 2>/dev/null || true
+          cp -f "${BUILD_ROOT}/static-check.txt" "${GITHUB_WORKSPACE}/dist/static-check.txt"
+          cp -f "${BUILD_ROOT}/source-versions.md" "${GITHUB_WORKSPACE}/dist/source-versions.md"
+          # 裁剪 diff（脚本写在 /tmp）
+          [ -f /tmp/r28s-removed.txt ] && cp -f /tmp/r28s-removed.txt "${GITHUB_WORKSPACE}/dist/removed-packages.txt" || true
+          ls -la "${GITHUB_WORKSPACE}/dist"
+
+      # -----------------------------------------------------------------------
+      - name: 13. 上传构建产物（artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: r28s-minimal-${{ inputs.mode }}-${{ github.run_number }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      # -----------------------------------------------------------------------
+      - name: 14. 发布镜像到 Release（仅 full 模式）
+        if: inputs.mode == 'full'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "R28S FriendlyWrt 25.12 Minimal（自建）"
+          body_path: dist/REPORT.md
+          files: |
+            dist/*.img.gz
+            dist/*.img.gz.sha256
+            dist/*.manifest
+            dist/REPORT.md
+            dist/installed-packages.txt
+            dist/removed-packages.txt
+            dist/firmware-list.txt
+            dist/static-check.txt
+          overwrite_files: true
+
+      # -----------------------------------------------------------------------
+      - name: 15. 输出摘要到 Actions 页面
+        if: always()
+        run: |
+          set -eu
+          {
+            echo "## R28S FriendlyWrt 25.12 Minimal — ${{ inputs.mode }} 结果"
+            echo ""
+            echo "- 运行号： #${{ github.run_number }}"
+            echo "- 触发人：${{ github.actor }}"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f dist/REPORT.md ]; then
+            cat dist/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f dist/static-check.txt ]; then
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '<details><summary>静态检查明细</summary>' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat dist/static-check.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo '</details>' >> "$GITHUB_STEP_SUMMARY"
+          fi
