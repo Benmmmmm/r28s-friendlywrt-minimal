@@ -76,8 +76,8 @@ echo "== 4. 防火墙 fw4 / nftables ========================================="
 has "CONFIG_PACKAGE_firewall4=y"
 has "CONFIG_PACKAGE_luci-app-firewall=y"
 has "CONFIG_PACKAGE_nftables-json=y"
-has "CONFIG_PACKAGE_kmod-nf-tables=y"
 has "CONFIG_PACKAGE_kmod-nf-conntrack=y"
+has "CONFIG_PACKAGE_kmod-nfnetlink=y"
 has "CONFIG_PACKAGE_kmod-nft-core=y"
 has "CONFIG_PACKAGE_kmod-nft-nat=y"
 
@@ -127,7 +127,9 @@ has "CONFIG_PACKAGE_iwinfo=y"
 has "CONFIG_PACKAGE_libiwinfo=y"
 has "CONFIG_PACKAGE_wireless-regdb=y"
 has "CONFIG_PACKAGE_kmod-cfg80211=y"
-has_re '^CONFIG_PACKAGE_kmod-mac80211=y' 'CONFIG_PACKAGE_kmod-mac80211=y'
+# 注：kmod-mac80211 在官方 01-nanopi 中同样未显式声明（保持 =m，即编译但不装入镜像），
+#     因此此处不作 =y 断言。R28S 板载 AIC8800 为 fullmac 方案，经 cfg80211/nl80211 工作，
+#     关键项是上面的 kmod-cfg80211。
 
 echo ""
 echo "== 9. 双网口相关（用户空间侧）======================================="
