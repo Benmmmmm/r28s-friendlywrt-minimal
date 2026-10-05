@@ -57,17 +57,33 @@ ROOTFS_DU="-"
 KERNEL_IMG="${PROJECT}/out/resource.img"
 [ -f "${KERNEL_IMG}" ] || KERNEL_IMG="${SDFUSE_OUT}/boot.img"
 
-# ---- gzip 并计算校验 --------------------------------------------------------
-cp -f "${IMG_SRC}" "${DIST}/${IMG_NAME}"
-IMG_LINE=$(sha256sum "${DIST}/${IMG_NAME}" | awk '{print $1}')
-
-echo "正在压缩（gzip，与官方一致的默认级别）…"
-gzip -f "${DIST}/${IMG_NAME}"
+# ---- 收集镜像并压缩 ---------------------------------------------------------
+# 官方 sd-fuse（mk-sd-image.sh）收尾时已在 out/ 内生成同名 .img.gz。
+# 直接复用它，避免把 3.5GB 裸镜像再复制+压缩一遍（既慢又易触发 runner 资源上限）。
 GZ_PATH="${DIST}/${IMG_NAME}.gz"
+OFFICIAL_GZ="${PROJECT}/out/${IMG_NAME}.gz"
+
+if [ -f "${OFFICIAL_GZ}" ]; then
+	echo "复用官方已生成的压缩包: ${OFFICIAL_GZ}"
+	cp -f "${OFFICIAL_GZ}" "${GZ_PATH}"
+else
+	echo "官方 .gz 缺失，自行压缩…"
+	cp -f "${IMG_SRC}" "${DIST}/${IMG_NAME}"
+	IMG_LINE=$(sha256sum "${DIST}/${IMG_NAME}" | awk '{print $1}')
+	# -1 = 最低压缩级别：内存占用小、速度快，镜像最终仍会 gzip，体积差异可接受
+	if ! gzip -1 -f "${DIST}/${IMG_NAME}" ; then
+		echo "ERROR: gzip 压缩失败（镜像 ${IMG_HUMAN}），已保留未压缩 .img" >&2
+		exit 1
+	fi
+fi
+
 GZ_BYTES=$(stat -c %s "${GZ_PATH}")
 GZ_HUMAN=$(numfmt --to=iec --suffix=B "${GZ_BYTES}" 2>/dev/null || echo "${GZ_BYTES}B")
 GZ_SHA=$(sha256sum "${GZ_PATH}" | awk '{print $1}')
 echo "${GZ_SHA}  $(basename "${GZ_PATH}")" > "${DIST}/${IMG_NAME}.gz.sha256"
+
+# 未压缩镜像的 sha256（用于报告，不复制大文件到 dist/）
+IMG_LINE=$(sha256sum "${IMG_SRC}" | awk '{print $1}')
 
 # ---- 官方基线 ---------------------------------------------------------------
 OFFICIAL_TAG="-"
@@ -207,7 +223,7 @@ fi
 	echo "| 项目 | 大小 | 说明 |"
 	echo "|---|---|---|"
 	printf '| 最终 SD 镜像 .img | %s | 未压缩，板级分区镜像 |\n' "${IMG_HUMAN}"
-	printf '| **最终 .img.gz** | **%s** | **交付物（gzip 默认级别）** |\n' "${GZ_HUMAN}"
+	printf '| **最终 .img.gz** | **%s** | **交付物** |\n' "${GZ_HUMAN}"
 	if [ -n "${ROOTFS_DIR}" ]; then
 		printf '| rootfs 目录（内容） | %s | 实际文件占用，不含分区空余 |\n' "${ROOTFS_DU}"
 	fi

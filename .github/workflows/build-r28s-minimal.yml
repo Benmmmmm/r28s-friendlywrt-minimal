@@ -238,6 +238,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: r28s-minimal-${{ inputs.mode }}-${{ github.run_number }}
+          # dist/ 内只放轻量产物（.img.gz 约 170MB + 文本清单）。
+          # 切勿把 3.5GB 裸 .img 放进 dist/：artifact 单文件上限会导致失败。
           path: dist/*
           if-no-files-found: error
           retention-days: 30
