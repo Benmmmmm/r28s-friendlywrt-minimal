@@ -1,0 +1,12 @@
+# 构建产物（不上传）
+dist/
+build/
+*.img
+*.img.gz
+*.sha256
+*.tgz
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
