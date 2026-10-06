@@ -16,6 +16,9 @@
 # =============================================================================
 set -eu
 
+# 出错时精确报出失败行（set -e 静默退出时，这是唯一的定位线索）
+trap 'echo "ERROR: make-report.sh 第 ${LINENO} 行失败 (退出码 $?): ${BASH_COMMAND}" >&2' ERR
+
 BUILD_ROOT="${1:?用法: make-report.sh <BUILD_ROOT> <DIST_DIR>}"
 DIST="${2:?用法: make-report.sh <BUILD_ROOT> <DIST_DIR>}"
 PROJECT="${BUILD_ROOT}/project"
@@ -82,8 +85,10 @@ GZ_HUMAN=$(numfmt --to=iec --suffix=B "${GZ_BYTES}" 2>/dev/null || echo "${GZ_BY
 GZ_SHA=$(sha256sum "${GZ_PATH}" | awk '{print $1}')
 echo "${GZ_SHA}  $(basename "${GZ_PATH}")" > "${DIST}/${IMG_NAME}.gz.sha256"
 
-# 未压缩镜像的 sha256（用于报告，不复制大文件到 dist/）
-IMG_LINE=$(sha256sum "${IMG_SRC}" | awk '{print $1}')
+# 未压缩镜像的 sha256（3.58GB，耗时较长；失败不影响主流程）
+IMG_LINE="-"
+IMG_LINE=$(sha256sum "${IMG_SRC}" 2>/dev/null | awk '{print $1}') \
+	|| { IMG_LINE="-"; echo "WARN: 计算未压缩镜像 sha256 失败（不影响交付物）"; }
 
 # ---- 官方基线 ---------------------------------------------------------------
 OFFICIAL_TAG="-"

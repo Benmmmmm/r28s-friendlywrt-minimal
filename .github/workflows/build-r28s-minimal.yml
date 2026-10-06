@@ -206,8 +206,53 @@ jobs:
           ls -la out/ || true
 
       # -----------------------------------------------------------------------
-      - name: 11. 收集产物并生成报告
+      # 11a 是关键步骤：把镜像产物复制进 dist/，保证无论如何都能交付。
+      # 11b 只负责生成报告，允许失败（continue-on-error），绝不拖垮产物。
+      # -----------------------------------------------------------------------
+      - name: 11a. 收集镜像产物（关键，保证产物落地）
         if: inputs.mode == 'full'
+        run: |
+          set -eu
+          DIST="${GITHUB_WORKSPACE}/dist"
+          OUT_DIR="${BUILD_ROOT}/project/out"
+          mkdir -p "${DIST}"
+          echo "--- 构建输出目录 out/ ---"
+          ls -la "${OUT_DIR}" || true
+
+          # 定位 .img.gz（out/ 内由官方 sd-fuse 的 mk-sd-image.sh 生成）
+          IMG_GZ=""
+          IMG_GZ="$(find "${OUT_DIR}" -maxdepth 2 -name '*.img.gz' -printf '%s\t%p\n' 2>/dev/null \
+                     | sort -rn | head -1 | cut -f2)" || true
+          if [ -z "${IMG_GZ}" ] || [ ! -f "${IMG_GZ}" ]; then
+            echo "ERROR: out/ 内未找到 .img.gz 产物" >&2
+            exit 1
+          fi
+          echo "选中镜像: ${IMG_GZ}"
+
+          cp -f "${IMG_GZ}" "${DIST}/${IMG_NAME}.gz"
+          ( cd "${DIST}" && sha256sum "${IMG_NAME}.gz" > "${IMG_NAME}.gz.sha256" )
+          echo "校验值:"
+          cat "${DIST}/${IMG_NAME}.gz.sha256"
+
+          # 保证 REPORT.md 存在（11b 若失败也不影响 Release 的 body_path）
+          if [ ! -f "${DIST}/REPORT.md" ]; then
+            {
+              echo "# R28S FriendlyWrt 25.12 Minimal — 构建报告"
+              echo ""
+              echo "> 报告生成步骤未完成，但镜像产物已成功收集，见附件。"
+              echo ""
+              echo "- 镜像文件：\`${IMG_NAME}.gz\`"
+              echo "- 校验值见 \`${IMG_NAME}.gz.sha256\`"
+            } > "${DIST}/REPORT.md"
+          fi
+
+          echo "--- dist/ ---"
+          ls -la "${DIST}"
+
+      # -----------------------------------------------------------------------
+      - name: 11b. 生成详细报告（best-effort，失败不影响产物交付）
+        if: inputs.mode == 'full'
+        continue-on-error: true
         env:
           RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
@@ -215,7 +260,8 @@ jobs:
           cd "${BUILD_ROOT}/project"
           bash "${GITHUB_WORKSPACE}/scripts/make-report.sh" \
             "${BUILD_ROOT}" \
-            "${GITHUB_WORKSPACE}/dist"
+            "${GITHUB_WORKSPACE}/dist" \
+            || echo "WARN: 报告生成失败（镜像产物已由 11a 收集，不影响交付）"
           echo "--- dist/ ---"
           ls -la "${GITHUB_WORKSPACE}/dist"
 
@@ -252,6 +298,8 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "R28S FriendlyWrt 25.12 Minimal（自建）"
           body_path: dist/REPORT.md
+          # 清单类文件可能因报告步骤 best-effort 失败而缺失，不应因此中断发布
+          fail_on_unmatched_files: false
           files: |
             dist/*.img.gz
             dist/*.img.gz.sha256
