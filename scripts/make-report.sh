@@ -47,9 +47,11 @@ part_size() {
 	local f="$1"
 	if [ -f "${f}" ]; then
 		local b; b=$(stat -c %s "${f}")
-		printf '%s\t%s' "$(numfmt --to=iec --suffix=B "${b}" 2>/dev/null || echo ${b}B)" "${b}"
+		# 必须以 \n 结尾：调用方用 `read -r a b < <(part_size ...)` 读取，
+		# 无换行时 read 在 EOF 返回 1，配合 set -e 会静默中止整个脚本（run#2/#4 的真凶）。
+		printf '%s\t%s\n' "$(numfmt --to=iec --suffix=B "${b}" 2>/dev/null || echo ${b}B)" "${b}"
 	else
-		printf '-\t-'
+		printf -- '-\t-\n'
 	fi
 }
 
@@ -237,7 +239,7 @@ fi
 	fi
 	for pf in boot.img rootfs.img opt.img; do
 		if [ -f "${SDFUSE_OUT}/${pf}" ]; then
-			read -r human bytes < <(part_size "${SDFUSE_OUT}/${pf}")
+			read -r human bytes < <(part_size "${SDFUSE_OUT}/${pf}") || true
 			printf '| 分区 %s | %s | sd-fuse 产出 |\n' "${pf}" "${human}"
 		fi
 	done
