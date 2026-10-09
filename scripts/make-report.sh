@@ -30,10 +30,12 @@ OFFICIAL_ASSET="${OFFICIAL_ASSET:-R28S-Zero2-NEO3Plus-Series-FriendlyWrt-25.12.i
 mkdir -p "${DIST}"
 
 # ---- 定位产物 ---------------------------------------------------------------
+# 注意：project/out 是符号链接（-> scripts/sd-fuse/out）。`-f`/`ls` 会自动跟随，
+# 但 `find` 默认不跟随，需用 `find -L` 或 readlink -f 解析（曾因此误报找不到产物）。
 IMG_SRC="${PROJECT}/out/${IMG_NAME}"
 if [ ! -f "${IMG_SRC}" ]; then
 	echo "WARN: 未找到 ${IMG_SRC}，改为搜索 out/*.img" >&2
-	IMG_SRC="$(ls -S "${PROJECT}"/out/*.img 2>/dev/null | head -1 || true)"
+	IMG_SRC="$(find -L "${PROJECT}/out" -maxdepth 1 -name '*.img' -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2)" || true
 fi
 [ -n "${IMG_SRC}" ] && [ -f "${IMG_SRC}" ] || { echo "ERROR: 找不到最终 .img" >&2; exit 1; }
 echo "最终镜像: ${IMG_SRC}"

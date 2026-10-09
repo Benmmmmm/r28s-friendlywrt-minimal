@@ -219,12 +219,20 @@ jobs:
           echo "--- 构建输出目录 out/ ---"
           ls -la "${OUT_DIR}" || true
 
+          # 注意：out 是符号链接（-> scripts/sd-fuse/out），find 默认不跟随符号链接，
+          # 必须解析出真实目录（readlink -f）或加 -L，否则会误报"未找到产物"。
+          REAL_OUT="$(readlink -f "${OUT_DIR}" 2>/dev/null || echo "${OUT_DIR}")"
+          echo "out 真实路径: ${REAL_OUT}"
+          ls -la "${REAL_OUT}" || true
+
           # 定位 .img.gz（out/ 内由官方 sd-fuse 的 mk-sd-image.sh 生成）
           IMG_GZ=""
-          IMG_GZ="$(find "${OUT_DIR}" -maxdepth 2 -name '*.img.gz' -printf '%s\t%p\n' 2>/dev/null \
+          IMG_GZ="$(find -L "${REAL_OUT}" -maxdepth 2 -name '*.img.gz' -printf '%s\t%p\n' 2>/dev/null \
                      | sort -rn | head -1 | cut -f2)" || true
           if [ -z "${IMG_GZ}" ] || [ ! -f "${IMG_GZ}" ]; then
             echo "ERROR: out/ 内未找到 .img.gz 产物" >&2
+            echo "已搜索目录: ${REAL_OUT}" >&2
+            find -L "${REAL_OUT}" -name '*.img*' 2>/dev/null | head -20 >&2 || true
             exit 1
           fi
           echo "选中镜像: ${IMG_GZ}"
