@@ -187,11 +187,15 @@ OPENWRT_VER=$(grep -m1 '^CONFIG_VERSION_NUMBER=' "${CFG}" 2>/dev/null | cut -d'"
 # ---- 写出报告 ---------------------------------------------------------------
 NOW=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 DURATION="-"
-if [ -n "${RUN_STARTED_AT:-}" ]; then
+# 优先用「0. 环境信息」步骤写入 GITHUB_ENV 的 BUILD_START_EPOCH；
+# 退化到 github.run_started_at（实测该上下文在步骤 env 中可能为空，故仅作兜底）。
+START_EPOCH="${BUILD_START_EPOCH:-}"
+if [ -z "${START_EPOCH}" ] && [ -n "${RUN_STARTED_AT:-}" ]; then
 	START_EPOCH=$(date -u -d "${RUN_STARTED_AT}" +%s 2>/dev/null || echo "")
-	if [ -n "${START_EPOCH}" ]; then
-		DURATION="$(( ($(date -u +%s) - START_EPOCH) / 60 )) 分钟"
-	fi
+fi
+if [ -n "${START_EPOCH}" ]; then
+	ELAPSED_MIN=$(( ($(date -u +%s) - START_EPOCH) / 60 ))
+	DURATION="${ELAPSED_MIN} 分钟（约 $(( ELAPSED_MIN / 60 )) 小时 $(( ELAPSED_MIN % 60 )) 分）"
 fi
 
 {

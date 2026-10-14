@@ -56,6 +56,10 @@ jobs:
           echo "模式   : ${{ inputs.mode }}"
           echo "--- 磁盘 ---"
           df -h
+          # 记录任务开始时间戳，供报告计算「构建耗时」。
+          # 不要依赖 github.run_started_at：实测在步骤 env 中会取到空值。
+          echo "BUILD_START_EPOCH=$(date -u +%s)" >> "$GITHUB_ENV"
+          echo "任务开始: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
       # -----------------------------------------------------------------------
       - name: 1. 选择构建目录并释放磁盘
